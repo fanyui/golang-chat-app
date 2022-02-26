@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sort"
 
 	"github.com/CloudyKit/jet/v6"
 	"github.com/gorilla/websocket"
@@ -36,15 +37,16 @@ type WebScoketConnection struct {
 
 //WsJsonResponse defines the response sent back from websocket
 type WsJsonResponse struct {
-	Action      string `json: "action"`
-	Message     string `json: "message"`
-	MessageType string `json: "message_type"`
+	Action         string   `json:"action"`
+	Message        string   `json:"message"`
+	MessageType    string   `json:"message_type"`
+	ConnectedUsers []string `json:"connected_users"`
 }
 type WsPayload struct {
-	Action   string              `json: "action"`
-	Username string              `json: "username"`
-	Message  string              `json: "message"`
-	Conn     WebScoketConnection `json: "-"`
+	Action   string              `json:"action"`
+	Username string              `json:"username"`
+	Message  string              `json:"message"`
+	Conn     WebScoketConnection `json:"-"`
 }
 
 // WsEndpoint upgreades a connection to websocket
@@ -69,10 +71,41 @@ func ListenToWsChannel() {
 	var response WsJsonResponse
 	for {
 		e := <-wsChan
-		response.Action = "Got here"
-		response.Message = fmt.Sprintf("Some message, and action was %s", e.Action)
+		// response.Action = "Got here"
+		// response.Message = fmt.Sprintf("Some message, and action was %s", e.Action)
+		// broadCastToAll(response)
+		switch e.Action {
+		case "username":
+			//get a list of all users and send it out via broadcast
+			clients[e.Conn] = e.Username
+			users := getUserList()
+			response.Action = "list_users"
+			response.ConnectedUsers = users
+			broadCastToAll(response)
+		case "left":
+			response.Action = "list_users"
+			delete(clients, e.Conn)
+			users := getUserList()
+			response.ConnectedUsers = users
+			broadCastToAll(response)
+		case "broadcast":
+			response.Action = "broadcast"
+			response.Message = fmt.Sprintf("<strong>%s</strong>: %s", e.Username, e.Message)
+			broadCastToAll(response)
+		}
 
 	}
+}
+
+func getUserList() []string {
+	var userList []string
+	for _, x := range clients {
+		if x != "" {
+			userList = append(userList, x)
+		}
+	}
+	sort.Strings(userList)
+	return userList
 }
 func broadCastToAll(response WsJsonResponse) {
 	for client := range clients {
@@ -96,7 +129,7 @@ func ListenForWs(conn *WebScoketConnection) {
 	for {
 		err := conn.ReadJSON(&payload)
 		if err != nil {
-			//do nothing
+			//do nothing for now but remember to handle this error
 		} else {
 			payload.Conn = *conn
 			wsChan <- payload
