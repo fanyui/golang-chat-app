@@ -13,6 +13,6 @@ func main() {
 	log.Println("starting channels listener")
 	go handlers.ListenToWsChannel()
 
-	log.Println("Starting server on port 8080")
-	_ = http.ListenAndServe(":8080", mux)
+	log.Println("Starting server on port 5000")
+	_ = http.ListenAndServe(":5000", mux)
 }
