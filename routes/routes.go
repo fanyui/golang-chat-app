@@ -1,4 +1,4 @@
-package main
+package routes
 
 import (
 	"net/http"
@@ -7,7 +7,7 @@ import (
 	"ws.com/chat/internal/handlers"
 )
 
-func routes() http.Handler {
+func Routes() http.Handler {
 	mux := pat.New()
 	mux.Get("/ws", http.HandlerFunc(handlers.WsEndpoint))
 

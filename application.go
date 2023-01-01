@@ -5,10 +5,11 @@ import (
 	"net/http"
 
 	"ws.com/chat/internal/handlers"
+	"ws.com/chat/routes"
 )
 
 func main() {
-	mux := routes()
+	mux := routes.Routes()
 	log.Println("starting channels listener")
 	go handlers.ListenToWsChannel()
 
