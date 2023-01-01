@@ -1,0 +1,299 @@
+package handlers
+
+import (
+	"fmt"
+	"log"
+	"net/http"
+	"sort"
+
+	"github.com/CloudyKit/jet/v6"
+	"github.com/gorilla/websocket"
+)
+
+var wsChan = make(chan WsPayload)
+
+// var clients = make(map[WebScoketConnection]string)
+var clients = make(map[string]map[WebScoketConnection]string)
+var newlyJoined = make(map[string][]string)
+var views = jet.NewSet(
+	jet.NewOSFileSystemLoader("./html"),
+	jet.InDevelopmentMode(),
+)
+var upgradeConnection = websocket.Upgrader{
+	ReadBufferSize:  1024,
+	WriteBufferSize: 1024,
+	CheckOrigin: func(r *http.Request) bool {
+		return true
+	},
+}
+
+func Home(w http.ResponseWriter, r *http.Request) {
+	err := renderPage(w, "home.jet", nil)
+	if err != nil {
+		log.Println(err)
+	}
+}
+
+type WebScoketConnection struct {
+	*websocket.Conn
+}
+
+//WsJsonResponse defines the response sent back from websocket
+type WsJsonResponse struct {
+	Username       string   `json:"username"`
+	Workspace      string   `json:"workspace"`
+	Action         string   `json:"action"`
+	Message        string   `json:"message"`
+	ConnectedUsers []string `json:"connected_users"`
+	Payload        Payload  `json:"payload"`
+}
+
+type Pos struct {
+	Line   int     `json:"line"`
+	Ch     int     `json:"ch"`
+	Sticky string  `json:"sticky"`
+	XRel   float32 `json:"xRel"`
+}
+type Range struct {
+	Anchor Pos `json:"anchor"`
+	Head   Pos `json:"head"`
+}
+
+type Select struct {
+	Origin string  `json:"origin"`
+	Ranges []Range `json:"ranges"`
+}
+type Change struct {
+	Origin  string   `json:"origin"`
+	From    Pos      `json:"from"`
+	Removed []string `json:"removed"`
+	Text    []string `json:"text"`
+	To      Pos      `json:"to"`
+}
+
+type Payload struct {
+	Select Select `json:"select"`
+	Change Change `json:"change"`
+}
+type WsPayload struct {
+	Workspace string              `json:"workspace"`
+	Action    string              `json:"action"`
+	Username  string              `json:"username"`
+	Message   string              `json:"message"`
+	Payload   Payload             `json:"payload"`
+	Conn      WebScoketConnection `json:"-"`
+}
+
+// WsEndpoint upgreades a connection to websocket
+func WsEndpoint(w http.ResponseWriter, r *http.Request) {
+	ws, err := upgradeConnection.Upgrade(w, r, nil)
+	if err != nil {
+		log.Println(err)
+	}
+	log.Println("Client connected to endpoint")
+	var response WsJsonResponse
+	response.Message = `<em><small> Connected to server</small></em>`
+	conn := WebScoketConnection{Conn: ws}
+	// clients[conn] = ""
+	err = ws.WriteJSON(response)
+	if err != nil {
+		log.Println(err)
+	}
+	go ListenForWs(&conn)
+}
+
+func ListenToWsChannel() {
+	var response WsJsonResponse
+	for {
+		e := <-wsChan
+		// response.Action = "Got here"
+		// response.Message = fmt.Sprintf("Some message, and action was %s", e.Action)
+		// broadCastToAll(response)
+		switch e.Action {
+
+		case "createworkspace":
+			// get the current workspace if it is available in the first place
+
+			clients[e.Workspace] = make(map[WebScoketConnection]string)
+			response.Action = "success"
+			response.Workspace = e.Workspace
+			response.Username = e.Username
+			e.Conn.WriteJSON(response)
+
+		case "join_workspace":
+			// get the current workspace if it is available in the first place
+			workspace, ok := clients[e.Workspace]
+			if !ok {
+				// the workspace doesn't exist send this user a warning
+				response.Action = "error"
+				response.Message = "Workspace doesn't exist"
+				e.Conn.WriteJSON(response)
+			} else {
+				workspace[e.Conn] = e.Username
+				users := getUserList(e.Workspace)
+				response.Action = "join_workspace"
+				response.ConnectedUsers = users
+				// This newly joined user will receive the document from one of the participants
+				// this participant is decided upon by checking who is the first in th elist of users.
+				broadCastToAllExceptMe(e.Workspace, response, e.Conn)
+				// now send a message to this user who joined that it was a success.
+				var success WsJsonResponse
+				success.Action = "success"
+				success.Workspace = e.Workspace
+				success.Username = e.Username
+				success.Message = "You are now a member of the workspace 😊 "
+				e.Conn.WriteJSON(success)
+				// Add this user to the list of newly joined users so that they can receive back the entire document
+				waitingusers := newlyJoined[e.Workspace]
+				waitingusers = append(waitingusers, e.Username)
+
+			}
+		case "username":
+			//get a list of all users and send it out via broadcast
+			workspace, ok := clients[e.Workspace]
+			if !ok {
+				// the workspace doesn't exist send this user a warning
+				response.Action = "error"
+				response.Message = "Workspace doesn't exist"
+				e.Conn.WriteJSON(response)
+			} else {
+
+				workspace[e.Conn] = e.Username
+				users := getUserList(e.Workspace)
+				response.Action = "list_users"
+				response.ConnectedUsers = users
+				broadCastToAll(e.Workspace, response)
+
+			}
+		case "left":
+			response.Action = "list_users"
+			delete(clients[e.Workspace], e.Conn)
+			users := getUserList(e.Workspace)
+			response.ConnectedUsers = users
+			broadCastToAll(e.Workspace, response)
+		case "broadcast":
+			response.Action = "broadcast"
+			response.Payload = e.Payload
+			fmt.Printf("event payload is %+v \n", e.Payload)
+			fmt.Println(e.Payload)
+			broadCastToAllExceptMe(e.Workspace, response, e.Conn)
+		case "beforeSelectionChange":
+			response.Action = "beforeSelectionChange"
+			response.Payload = e.Payload
+			fmt.Printf("beforeSelectionChange event is %+v \n", e.Payload)
+			broadCastToAllExceptMe(e.Workspace, response, e.Conn)
+		case "change":
+			response.Action = "change"
+			response.Payload = e.Payload
+			fmt.Printf("change event is %+v \n", e.Payload)
+			broadCastToAllExceptMe(e.Workspace, response, e.Conn)
+
+		case "send_document":
+			response.Action = "receive_document"
+			response.Payload = e.Payload
+			/**
+			Note everyuser who is in the waitinglist of newly joined will receive this document.
+			ie the one who just joined the workspace, this hacky
+			*/
+			requestForDocumentUsers := newlyJoined[e.Workspace]
+			for _, name := range requestForDocumentUsers {
+				sendToUser(e.Workspace, name, response)
+				// requestForDocumentUsers = removeItemFromSlice(requestForDocumentUsers, index)
+
+			}
+			newlyJoined[e.Workspace] = nil
+		}
+
+	}
+}
+
+func removeItemFromSlice(s []string, i int) []string {
+	s[i] = s[len(s)-1]
+	return s[:len(s)-1]
+}
+func sendToUser(workspaceId string, username string, response WsJsonResponse) error {
+	for conn, x := range clients[workspaceId] {
+		if x != "" && x == username {
+			response.Username = x
+			err := conn.WriteJSON(response)
+			if err != nil {
+				log.Println("websocket erro")
+				_ = conn.Close()
+				delete(clients[workspaceId], conn)
+			}
+			return nil
+		}
+	}
+	return fmt.Errorf("user not found")
+}
+
+func getUserList(workspaceId string) []string {
+	var userList []string
+	for _, x := range clients[workspaceId] {
+		if x != "" {
+			userList = append(userList, x)
+		}
+	}
+	sort.Strings(userList)
+	return userList
+}
+func broadCastToAll(workspaceId string, response WsJsonResponse) {
+	for client, username := range clients[workspaceId] {
+		response.Username = username
+		err := client.WriteJSON(response)
+		if err != nil {
+			log.Println("websocket erro")
+			_ = client.Close()
+			delete(clients[workspaceId], client)
+		}
+	}
+}
+func broadCastToAllExceptMe(workspaceId string, response WsJsonResponse, con WebScoketConnection) {
+
+	for client, username := range clients[workspaceId] {
+		if client != con {
+			response.Username = username
+			err := client.WriteJSON(response)
+			if err != nil {
+				log.Println("websocket erro")
+				_ = client.Close()
+				delete(clients[workspaceId], client)
+			}
+		}
+	}
+}
+
+func ListenForWs(conn *WebScoketConnection) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Println("Error", fmt.Sprintf("%v", r))
+		}
+	}()
+	var payload WsPayload
+
+	for {
+		err := conn.ReadJSON(&payload)
+		if err != nil {
+			//do nothing for now but remember to handle this error
+		} else {
+			payload.Conn = *conn
+			wsChan <- payload
+		}
+	}
+}
+func renderPage(w http.ResponseWriter, templ string, data jet.VarMap) error {
+	view, err := views.GetTemplate(templ)
+	if err != nil {
+		log.Println(err)
+		return err
+	}
+	err = view.Execute(w, data, nil)
+	if err != nil {
+		log.Println(err)
+		return err
+	}
+	return nil
+}
+
+// Todo: Build the receiver UI to get the exchanged messages.
+//
