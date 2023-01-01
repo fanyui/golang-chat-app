@@ -121,8 +121,14 @@ func ListenToWsChannel() {
 			}
 
 		case "getDocument":
+
 			response.Workspace = e.Workspace
 			response.Username = "harisu"
+			// response.Action = "getDocument"
+			// response.Version = 0
+
+			// e.Conn.WriteJSON(response)
+
 			response.Action = "pushUpdates"
 			var workspaceupdates = updates[e.Workspace]
 			response.Payload = workspaceupdates
@@ -141,7 +147,7 @@ func ListenToWsChannel() {
 			response.Version = len(updates[e.Workspace])
 			response.Username = e.Username
 			// e.Conn.WriteJSON(response)
-			broadCastToAll("g12", response)
+			broadCastToAll(e.Workspace, response)
 
 			// }
 			// if (e.version != len(updates)) {
