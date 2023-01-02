@@ -17,7 +17,8 @@ go run application.go
 ```sh
 go test
 ```
-
+## Supported Events
+- getDocument ✨
 
 ## Tech
 - [Go lang v1.18](https://go.dev/) 
